@@ -2,21 +2,35 @@ require('dotenv').config();
 const nodemailer = require('nodemailer');
 const XLSX = require('xlsx');
 const path = require('path');
+const dns = require('dns').promises;
 
-// Helper function to split and clean string entries
+// Function to split and clean a string (for names or emails)
 function splitAndClean(input) {
   if (!input) return [];
   input = input.trim();
-  let items = [];
-  // If the string starts with a numbered prefix like "1." or "1)"
-  if (/^\d+[\.\)]/.test(input)) {
-    // Split by any occurrence of digits followed by a period or closing parenthesis
-    items = input.split(/\d+[\.\)]/).map(s => s.trim()).filter(Boolean);
-  } else {
-    // Otherwise, split on newline, comma, or semicolon.
-    items = input.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+
+  // Extract email addresses from the items
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  let matches = input.match(emailRegex) || [];
+  matches = matches.map(email => email.replace(/^\d+[\.\)]/, '').replace(/[\s,;]+$/, ''));
+  
+  // Return the array of matched email addresses or an empty array if no matches are found
+  console.log(matches)
+  return matches || [];
+}
+
+// Function to validate an email's syntax and deliverability (via MX lookup)
+async function isDeliverable(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) return false;
+  const domain = email.split('@')[1];
+  try {
+    const addresses = await dns.resolveMx(domain);
+    return addresses && addresses.length > 0;
+  } catch (err) {
+    console.error(`DNS lookup failed for ${domain}:`, err.message);
+    return false;
   }
-  return items;
 }
 
 // Function to read the Excel file and extract HR details
@@ -25,32 +39,17 @@ function getHRList(filePath) {
   const sheetName = workbook.SheetNames[0];
   const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
   const hrList = [];
-
   data.forEach(row => {
-    // Get company name; if missing, use a default.
     const company = row.Company || "Company Name Not Provided";
-
-    // Extract HR names and emails from the respective columns.
-    // The email column header might have a trailing space.
     const hrNamesRaw = row["Name of HR's"];
     const hrEmailsRaw = row["HR Email id "] || row["HR Email id"];
-
-    // If no HR email is provided, skip this row.
     if (!hrEmailsRaw) {
       console.warn("Skipping row (no HR Email id):", row);
       return;
     }
-
-    // Use the helper function to split and clean the names and emails.
     let hrNames = splitAndClean(hrNamesRaw);
     let hrEmails = splitAndClean(hrEmailsRaw);
-
-    // If HR names array is smaller than emails array, fill missing names with default "HR"
-    while (hrNames.length < hrEmails.length) {
-      hrNames.push("HR");
-    }
-
-    // Create an entry for each HR email from this row.
+    while (hrNames.length < hrEmails.length) hrNames.push("HR");
     hrEmails.forEach((email, index) => {
       hrList.push({
         company,
@@ -59,28 +58,14 @@ function getHRList(filePath) {
       });
     });
   });
-
   return hrList;
 }
 
-// Create the email transporter using your SMTP configuration.
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT,
-  secure: true, // true for port 465, false for port 587
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-// Function to generate the email body using your updated template.
+// Function to generate the email HTML body
 function getEmailBody(hrName, companyName) {
   return `
     <p>Dear <span style="font-weight:bold;">${hrName}</span>,</p>
-
     <p>I'm <span style="font-weight:bold;">G. Dinesh Surya</span>, a final-year student at <span style="font-weight:bold;">NIT Kurukshetra</span>, and I'm highly interested in software opportunities (internships or full-time) at <span style="font-weight:bold;">${companyName}</span>.</p>
-
     <p><span style="font-weight:bold;">Key Highlights:</span></p>
     <ul>
       <li><span style="font-weight:bold;">Experience:</span> 6+ months of full-stack internship experience at <span style="font-weight:bold;">AutoRABIT</span> and <span style="font-weight:bold;">GrowthCraft</span>.</li>
@@ -88,28 +73,23 @@ function getEmailBody(hrName, companyName) {
       <li><span style="font-weight:bold;">Coding Proficiency:</span> Top 3% on LeetCode (Knight rating: <span style="font-weight:bold;">1929</span>), University Rank 1 on InterviewBit (Top 0.7% globally).</li>
       <li><span style="font-weight:bold;">Tech Stack:</span> <span style="font-weight:bold;">C, C++, JavaScript, React.js, Node.js, Express.js, HTML/CSS</span>.</li>
     </ul>
-
     <p>My resume is attached for your review. I'd welcome the opportunity to discuss how my skills and experience align with your team's needs.</p>
-
     <p>Thank you for your time.</p>
-
     <p>Best regards,<br>
     <span style="font-weight:bold;">Dinesh Surya Gidijala</span><br>
     +91 8121400482<br>
     dineshsurya.2002@gmail.com</p>
-
     <p>LinkedIn: <a href="https://linkedin.com/in/dinesh21o9">linkedin.com/in/dinesh21o9</a> | GitHub: <a href="https://github.com/dinesh21o9">github.com/dinesh21o9</a></p>
   `;
 }
 
-// Function to send an email to a specific HR individually.
-// Returns true if the email was sent successfully, false otherwise.
+// Function to send an email to a specific HR
 async function sendEmail(companyName, hrName, hrEmail) {
   const mailOptions = {
     from: process.env.SMTP_USER,
-    to: hrEmail, // Sending directly to HR's email.
-    subject: `Software Opportunity Inquiry at ${companyName}`,
-    html: getEmailBody(hrName, companyName), // Using HTML body
+    to: hrEmail,
+    subject: `Software Developer Opportunity Inquiry at ${companyName}`,
+    html: getEmailBody(hrName, companyName),
     attachments: [
       {
         filename: 'Dinesh_Surya_Gidijala_Resume.pdf',
@@ -117,39 +97,36 @@ async function sendEmail(companyName, hrName, hrEmail) {
       },
     ],
   };
-
   try {
     let info = await transporter.sendMail(mailOptions);
     console.log(`Email sent to ${hrEmail}: ${info.messageId}`);
     return true;
   } catch (error) {
-    console.error(`Error sending email to ${hrEmail}:`, error);
+    console.error(`Error sending email to ${hrEmail}:`, error.message);
     return false;
   }
 }
 
-
-// Main function: read the Excel file and send emails to each HR.
+// Main function to read the Excel file and send emails concurrently
 async function main() {
-  const hrList = getHRList('231-300.xlsx'); // Place your XLSX file in the same directory.
-  
-  // To keep track of results.
-  const companyResults = {}; // { companyName: { attempts, successes, failures } }
-  let totalAttempts = 0;
-  let totalSuccesses = 0;
-  let totalFailures = 0;
-  
-  // Loop through each HR entry and send an email individually.
-  for (const hr of hrList) {
+  const { default: pLimit } = await import('p-limit'); // dynamic import for p-limit (ESM)
+  const hrList = getHRList('./data/231-300.xlsx');
+  const companyResults = {};
+  let totalAttempts = 0, totalSuccesses = 0, totalFailures = 0;
+  const limit = pLimit(20); // concurrency limit set to 20
+  const tasks = hrList.map(hr => limit(async () => {
     totalAttempts++;
-    console.log(`Sending email to ${hr.hrName} at ${hr.hrEmail} for ${hr.company}`);
-    
-    const success = await sendEmail(hr.company, hr.hrName, hr.hrEmail);
-    
-    // Initialize company results if not present.
-    if (!companyResults[hr.company]) {
-      companyResults[hr.company] = { attempts: 0, successes: 0, failures: 0 };
+    if (!(await isDeliverable(hr.hrEmail))) {
+      console.warn(`Skipping invalid/unreachable email: ${hr.hrEmail}`);
+      totalFailures++;
+      companyResults[hr.company] = companyResults[hr.company] || { attempts: 0, successes: 0, failures: 0 };
+      companyResults[hr.company].attempts++;
+      companyResults[hr.company].failures++;
+      return;
     }
+    console.log(`Sending email to ${hr.hrName} at ${hr.hrEmail} for ${hr.company}`);
+    const success = await sendEmail(hr.company, hr.hrName, hr.hrEmail);
+    companyResults[hr.company] = companyResults[hr.company] || { attempts: 0, successes: 0, failures: 0 };
     companyResults[hr.company].attempts++;
     if (success) {
       companyResults[hr.company].successes++;
@@ -158,25 +135,18 @@ async function main() {
       companyResults[hr.company].failures++;
       totalFailures++;
     }
-  }
-  
-  // Calculate summary metrics.
+  }));
+  await Promise.all(tasks);
   const totalCompanies = Object.keys(companyResults).length;
-  let companiesApplied = 0; // Companies with at least one success.
-  let companiesNotSent = 0; // Companies with zero success.
-  
+  let companiesApplied = 0, companiesNotSent = 0;
   for (const company in companyResults) {
-    if (companyResults[company].successes > 0) {
-      companiesApplied++;
-    } else {
-      companiesNotSent++;
-    }
+    if (companyResults[company].successes > 0) companiesApplied++;
+    else companiesNotSent++;
   }
-  
   console.log("\n====== Summary ======");
   console.log(`Total email attempts: ${totalAttempts}`);
   console.log(`Total successes: ${totalSuccesses}`);
-  console.log(`Total failures: ${totalFailures}`);
+  console.log(`Total failures (including invalid emails): ${totalFailures}`);
   console.log(`Total companies tried: ${totalCompanies}`);
   console.log(`Companies applied to (at least one email succeeded): ${companiesApplied}`);
   console.log(`Companies with no successful email: ${companiesNotSent}`);
