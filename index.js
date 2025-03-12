@@ -4,6 +4,15 @@ const XLSX = require('xlsx');
 const path = require('path');
 const dns = require('dns').promises;
 
+// Initialize the nodemailer transporter
+const transporter = nodemailer.createTransport({
+  service: 'gmail', // Use your email service (e.g., 'gmail', 'outlook')
+  auth: {
+    user: process.env.SMTP_USER, // Your email address
+    pass: process.env.SMTP_PASS, // Your email password or app-specific password
+  },
+});
+
 // Function to split and clean a string (for names or emails)
 function splitAndClean(input) {
   if (!input) return [];
@@ -99,10 +108,10 @@ async function sendEmail(companyName, hrName, hrEmail) {
   };
   try {
     let info = await transporter.sendMail(mailOptions);
-    console.log(`Email sent to ${hrEmail}: ${info.messageId}`);
+    console.log(`Email sent to ${hrEmail} : ${info.messageId}`);
     return true;
   } catch (error) {
-    console.error(`Error sending email to ${hrEmail}:`, error.message);
+    console.error(`Error sending email to ${hrEmail} :`, error.message);
     return false;
   }
 }
